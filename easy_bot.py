@@ -8,7 +8,7 @@ bot = telebot.TeleBot("1211817785:AAEh4cQB_QXeVAzTubblyazFrcoXoszAQwE")
 ## Створюємо клавіатуру
 buttons = telebot.types.ReplyKeyboardMarkup()
 buttons.row("Привітатися", "Інша клавіатура")
-buttons.row("Кнопка 3", "Кнопка 4")
+buttons.row("Добавити товар", "Продати товар")
 
 
 ## Створюємо інлайн - клавіатуру
