@@ -1,27 +1,44 @@
 import telebot
 import collections
+import configparser
+import sql_bot
 
-## DEBUG: ключі в основному коді зберігти не можна!!!
-## DEBUG: потрібно створити конфіг
-bot = telebot.TeleBot("")
+config = configparser.ConfigParser()
+config.read('config.ini')
 
-#рівні юзера, які задаємо числами
-START, LVL1, LVL2 = 0, 1, 2
+TOKEN = config['Telebot']['Token']
+bot = telebot.TeleBot(TOKEN)
 
+#рівні юзера для кнопки "Прихід товару"
+START, LVL1, LVL2, LVL3 = 0, 1, 2, 3
+LVL4, LVL5 = 4, 5
 
 # словник у якому зберігаємо рівні юзера
-dict_with_lvlusers = collections.defaultdict(lambda: START)
-
-
+dict_with_lvl = collections.defaultdict(lambda: START)
 #словник, що тимчасово зберігає введений продук юзера
 dict_with_productuser = {}
 
-#база даних для товару
-base_with_product = {}
+
 
 ## Створюємо клавіатуру
 markup = telebot.types.ReplyKeyboardMarkup()
 markup.row("Добавити товар", "Продати товар")
+
+## Створюємо клавіатуру для виходу
+markup_exit = telebot.types.ReplyKeyboardMarkup()
+markup_exit.row("Exit")
+
+@bot.message_handler(func=lambda msg: msg.text == "Exit")
+def exit(message):
+    if dict_with_lvl[message.chat.id]:
+        del dict_with_lvl[message.chat.id]
+
+    if dict_with_productuser.get(message.chat.id, False):
+        del dict_with_productuser[message.chat.id]
+
+    bot.send_message(message.chat.id, "Ви успішно вийшли", reply_markup=markup)
+
+
 
 @bot.message_handler(commands=['start'])
 def hellower(message):
@@ -30,41 +47,125 @@ def hellower(message):
 
 
 @bot.message_handler(func=lambda msg: msg.text == "Добавити товар")
-def hey(message):
-    #переводимо юзера на новий рівень
-    dict_with_lvlusers[message.chat.id] = LVL1
-    bot.send_message(message.chat.id, "Введи назву товару:")
+def add_product(message):
 
-@bot.message_handler(func=lambda msg: dict_with_lvlusers[msg.chat.id] == LVL1)
+    dict_with_lvl[message.chat.id] = LVL1  #переводимо юзера на новий рівень
+
+    bot.send_message(message.chat.id, "Введи назву товару:", reply_markup=markup_exit)
+
+
+@bot.message_handler(func=lambda msg: dict_with_lvl[msg.chat.id] == LVL1)
 def product(message):
-    #переводимо юзера на новий рівень
-    dict_with_lvlusers[message.chat.id] = LVL2
 
     #тимчасово зберігаємо назву товару в базу даних
     dict_with_productuser[message.chat.id] = message.text
 
-    bot.send_message(message.chat.id, "Введи кількість для товару")
+    if sql_bot.check_product(message.text)  == True:
+        #переводимо на рівень введення кількості
+        dict_with_lvl[message.chat.id] = LVL3
+        bot.send_message(message.chat.id, "Введи кількість для товару",reply_markup=markup_exit)
 
-
-
-@bot.message_handler(func=lambda msg: dict_with_lvlusers[msg.chat.id] == LVL2)
-def product(message):
-    #Добавив інфу про товар в базу
-    product_tmp = dict_with_productuser[message.chat.id]
-    if product_tmp in base_with_product:
-        #якщо товар є в базі, то сумуємо кількість
-        base_with_product[product_tmp] += int(message.text)
     else:
-        #якщо товар відсутні, створюємо його
-        base_with_product[product_tmp] = int(message.text)
+        #переводимо на рівень введеня один виміру
+        dict_with_lvl[message.chat.id] = LVL2
+        bot.send_message(message.chat.id, "Введи одинці виміру", reply_markup=markup_exit)
 
-    #обнуляємо рівень юзера
-    del dict_with_lvlusers[message.chat.id]
 
-    print(base_with_product) # DEBUG: виводимо в консоль, щоб перевірити коректність
 
-    bot.send_message(message.chat.id, "Товар добавлено")
-    bot.send_message("884716148", f"Товар {product_tmp} в кількісті {message.text}")
+@bot.message_handler(func=lambda msg: dict_with_lvl[msg.chat.id] == LVL2)
+def unit(message):
+
+    #створюємо запис в таблиці sql :product:
+    product = dict_with_productuser[message.chat.id]
+    unit = message.text
+    result = sql_bot.insert_product(product, unit)
+    if result:
+        dict_with_lvl[message.chat.id] = LVL3
+        bot.send_message(message.chat.id, "Введи кількість для товару", reply_markup=markup_exit)
+    else:
+        del dict_with_lvl[message.chat.id]
+        bot.send_message(message.chat.id, "Щось пішло не так. Спробуйе ще раз", reply_markup=markup_exit)
+
+
+
+
+@bot.message_handler(func=lambda msg: dict_with_lvl[msg.chat.id] == LVL3)
+def qty(message):
+
+    product = dict_with_productuser[message.chat.id]
+
+    try:
+        qty = float(message.text)
+    except ValueError:
+        bot.send_message(message.chat.id, "Введіть коректну кількість!",  reply_markup=markup_exit)
+        dict_with_lvl[message.chat.id] = LVL3
+    else:
+        if sql_bot.insert_sales(product, qty):
+
+            del dict_with_lvl[message.chat.id]                      #del user lvl
+
+            #виводимо в  консоль таблицю даних
+            sql_bot.select_product()
+            sql_bot.select_sales()                                  # DEBUG: del this
+
+            bot.send_message(message.chat.id, "Товар добавлено", reply_markup=markup)
+        else:
+            del dict_with_lvl[message.chat.id]
+            bot.send_message(message.chat.id, "Упс",  reply_markup=markup)
+
+
+@bot.message_handler(func=lambda msg: msg.text == "Продати товар")
+def add_product(message):
+
+    dict_with_lvl[message.chat.id] = LVL4  #переводимо юзера на новий рівень
+
+    bot.send_message(message.chat.id, "Введи назву товару:", reply_markup=markup_exit)
+
+
+@bot.message_handler(func=lambda msg: dict_with_lvl[msg.chat.id] == LVL4)
+def product(message):
+
+    #тимчасово зберігаємо назву товару в базу даних
+    dict_with_productuser[message.chat.id] = message.text
+
+    if sql_bot.check_product(message.text)  == True:
+        #переводимо на рівень введення кількості
+        dict_with_lvl[message.chat.id] = LVL5
+        bot.send_message(message.chat.id, "Введи кількість для товару",reply_markup=markup_exit)
+    else:
+        bot.send_message(message.chat.id, "Товар відсутній")
+        del dict_with_lvl[message.chat.id]
+
+
+@bot.message_handler(func=lambda msg: dict_with_lvl[msg.chat.id] == LVL5)
+def qty(message):
+
+    product = dict_with_productuser[message.chat.id]
+
+    try:
+        qty = float(message.text)
+    except ValueError:
+        bot.send_message(message.chat.id, "Введіть коректну кількість!",  reply_markup=markup_exit)
+        dict_with_lvl[message.chat.id] = LVL5
+    else:
+        if sql_bot.insert_sales(product, -qty):
+
+            del dict_with_lvl[message.chat.id]                      #del user lvl
+
+            #виводимо в  консоль таблицю даних
+            sql_bot.select_product()
+            sql_bot.select_sales()                                  # DEBUG: del this
+
+            bot.send_message(message.chat.id, "Товар продано", reply_markup=markup)
+        else:
+            del dict_with_lvl[message.chat.id]
+            bot.send_message(message.chat.id, "Упс",  reply_markup=markup)
+
+
+
+
+
+
 
 
 
